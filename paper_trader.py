@@ -15,18 +15,28 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 COIN_NAME = {
-    "BTC/USDT":      "비트코인",
-    "ETH/USDT":      "이더리움",
-    "XRP/USDT":      "리플",
-    "DOGE/USDT":     "도지코인",
-    "SOL/USDT":      "솔라나",
-    "ADA/USDT":      "에이다",
-    # 선물 심볼
-    "BTC/USDT:USDT":  "비트코인",
-    "ETH/USDT:USDT":  "이더리움",
-    "XRP/USDT:USDT":  "리플",
-    "DOGE/USDT:USDT": "도지코인",
-    "SOL/USDT:USDT":  "솔라나",
+    # 현물
+    "BTC/USDT":   "비트코인",
+    "ETH/USDT":   "이더리움",
+    "XRP/USDT":   "리플",
+    "DOGE/USDT":  "도지코인",
+    "SOL/USDT":   "솔라나",
+    "BNB/USDT":   "바이낸스코인",
+    "ADA/USDT":   "에이다",
+    "AVAX/USDT":  "아발란체",
+    "LINK/USDT":  "체인링크",
+    "LTC/USDT":   "라이트코인",
+    # 선물
+    "BTC/USDT:USDT":   "비트코인",
+    "ETH/USDT:USDT":   "이더리움",
+    "XRP/USDT:USDT":   "리플",
+    "DOGE/USDT:USDT":  "도지코인",
+    "SOL/USDT:USDT":   "솔라나",
+    "BNB/USDT:USDT":   "바이낸스코인",
+    "ADA/USDT:USDT":   "에이다",
+    "AVAX/USDT:USDT":  "아발란체",
+    "LINK/USDT:USDT":  "체인링크",
+    "LTC/USDT:USDT":   "라이트코인",
 }
 
 

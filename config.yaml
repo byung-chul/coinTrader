@@ -6,10 +6,16 @@ trading:
   execution: "paper"     # "paper" (가짜 돈) 또는 "live" (실제 돈 ← 신중하게!)
   leverage: 5            # 레버리지 배수 (futures 모드에서만 사용, 최대 5배)
   markets:               # 동시에 감시할 코인 목록
-    - "BTC/USDT:USDT"    # 비트코인 선물 (현물은 BTC/USDT)
-    - "ETH/USDT:USDT"    # 이더리움 선물
-    - "XRP/USDT:USDT"    # 리플 선물
-    - "DOGE/USDT:USDT"   # 도지코인 선물
+    - "BTC/USDT:USDT"    # 비트코인
+    - "ETH/USDT:USDT"    # 이더리움
+    - "XRP/USDT:USDT"    # 리플
+    - "DOGE/USDT:USDT"   # 도지코인
+    - "SOL/USDT:USDT"    # 솔라나
+    - "BNB/USDT:USDT"    # 바이낸스코인
+    - "ADA/USDT:USDT"    # 에이다
+    - "AVAX/USDT:USDT"   # 아발란체
+    - "LINK/USDT:USDT"   # 체인링크
+    - "LTC/USDT:USDT"    # 라이트코인
   max_positions: 2       # 동시에 최대 몇 개 포지션을 열지 (롱+숏 합산)
   interval: "1m"         # 캔들 단위 (1m = 1분봉, 1h = 1시간봉, 1d = 하루봉)
   candle_count: 200      # 한 번에 몇 개의 캔들 데이터를 불러올지
