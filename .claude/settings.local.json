@@ -4,7 +4,10 @@
       "WebSearch",
       "Bash(pip install:*)",
       "Bash(pip3 install:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(git init:*)",
+      "Bash(echo:*)",
+      "Bash(git rm:*)"
     ]
   }
 }
