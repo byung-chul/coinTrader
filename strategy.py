@@ -61,6 +61,11 @@ def calculate_indicators(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     # ── 거래량 이동평균 ─────────────────────────────────────────
     df['volume_ma'] = df['volume'].rolling(window=20).mean()
 
+    # ── 추세 필터 (EMA200) ──────────────────────────────────────
+    # EMA200 위 = 상승 추세 (LONG만 허용)
+    # EMA200 아래 = 하락 추세 (SHORT만 허용)
+    df['ema200'] = df['close'].ewm(span=s.get('ema200_period', 200), adjust=False).mean()
+
     return df
 
 
@@ -78,6 +83,10 @@ def generate_signal(df: pd.DataFrame, config: dict) -> dict:
     vol_ratio = cur['volume'] / cur['volume_ma'] if cur['volume_ma'] > 0 else 0
     vol_surge = vol_ratio >= s.get('volume_mult', 1.5)
 
+    # ── 추세 판단 (EMA200 기준) ──────────────────────────────────
+    above_ema200 = cur['close'] > cur['ema200']   # True = 상승 추세
+    trend_label  = "상승추세" if above_ema200 else "하락추세"
+
     # ── LONG: 무릎에서 매수 ──────────────────────────────────────
     # 조건 1: 가격이 볼린저 밴드 아래 선 근처까지 떨어졌었음
     near_lower   = cur['bb_pct'] < s.get('bb_entry_lower', 0.25)  # 밴드 하위 25% 이하
@@ -85,33 +94,34 @@ def generate_signal(df: pd.DataFrame, config: dict) -> dict:
     rsi_bouncing = prev['rsi'] < rsi_oversold and cur['rsi'] > prev['rsi']
     # 조건 3: 거래량 증가 (사람들이 사기 시작)
 
-    if near_lower and rsi_bouncing and vol_surge:
-        score = (rsi_oversold - prev['rsi']) * vol_ratio   # 더 많이 떨어진 후 반등일수록 점수 높음
+    if near_lower and rsi_bouncing and vol_surge and above_ema200:
+        score = (rsi_oversold - prev['rsi']) * vol_ratio
         reason = (
-            f"① 가격이 볼린저 밴드 아래 선까지 떨어졌다가 올라오는 중 📉→📈  "
-            f"② 너무 많이 팔렸다가 다시 사는 사람들이 늘고 있어 (RSI {prev['rsi']:.0f}→{cur['rsi']:.0f})  "
-            f"③ 평소보다 {vol_ratio:.1f}배나 많이 거래되고 있어 🔥"
+            f"① [{trend_label}] EMA200 위 — 상승 추세 확인  "
+            f"② 가격이 볼린저 밴드 아래 선까지 떨어졌다가 올라오는 중 📉→📈  "
+            f"③ 너무 많이 팔렸다가 다시 사는 사람들이 늘고 있어 (RSI {prev['rsi']:.0f}→{cur['rsi']:.0f})  "
+            f"④ 평소보다 {vol_ratio:.1f}배나 많이 거래되고 있어 🔥"
         )
         return {'action': 'LONG', 'direction': 'LONG', 'reason': reason, 'atr': atr, 'score': score}
 
-    # ── SHORT: 어깨에서 공매도 (선물 모드에서만) ────────────────
+    # ── SHORT: 어깨에서 공매도 (선물 모드 + 하락 추세에서만) ────
     if trade_mode == 'futures':
-        # 조건 1: 가격이 볼린저 밴드 위 선 근처까지 올라갔었음
-        near_upper    = cur['bb_pct'] > s.get('bb_entry_upper', 0.75)  # 밴드 상위 75% 이상
-        # 조건 2: RSI가 과매수 구간에서 하락 시작 (올라가다가 내려오는 중)
+        near_upper    = cur['bb_pct'] > s.get('bb_entry_upper', 0.75)
         rsi_dropping  = prev['rsi'] > rsi_overbought and cur['rsi'] < prev['rsi']
 
-        if near_upper and rsi_dropping and vol_surge:
+        if near_upper and rsi_dropping and vol_surge and not above_ema200:
             score = (prev['rsi'] - rsi_overbought) * vol_ratio
             reason = (
-                f"① 가격이 볼린저 밴드 위 선까지 올랐다가 내려오는 중 📈→📉  "
-                f"② 너무 많이 샀다가 다시 파는 사람들이 늘고 있어 (RSI {prev['rsi']:.0f}→{cur['rsi']:.0f})  "
-                f"③ 평소보다 {vol_ratio:.1f}배나 많이 거래되고 있어 🔥"
+                f"① [{trend_label}] EMA200 아래 — 하락 추세 확인  "
+                f"② 가격이 볼린저 밴드 위 선까지 올랐다가 내려오는 중 📈→📉  "
+                f"③ 너무 많이 샀다가 다시 파는 사람들이 늘고 있어 (RSI {prev['rsi']:.0f}→{cur['rsi']:.0f})  "
+                f"④ 평소보다 {vol_ratio:.1f}배나 많이 거래되고 있어 🔥"
             )
             return {'action': 'SHORT', 'direction': 'SHORT', 'reason': reason, 'atr': atr, 'score': score}
 
     # ── 신호 없음 ────────────────────────────────────────────────
     failed = []
+    failed.append(f"추세: {trend_label} (EMA200 {'위' if above_ema200 else '아래'})")
     if not near_lower:    failed.append(f"아직 충분히 안 떨어졌어 (밴드 위치 {cur['bb_pct']*100:.0f}%)")
     if not rsi_bouncing:  failed.append(f"RSI가 아직 바닥에서 반등하지 않았어 ({cur['rsi']:.0f})")
     if not vol_surge:     failed.append(f"거래량이 아직 부족해 ({vol_ratio:.1f}배)")

@@ -65,7 +65,10 @@ class PaperTrader:
         logger.info(f"📄 페이퍼 트레이딩 시작")
         logger.info(f"   초기 자금: {self.capital:,.2f} USDT")
         logger.info(f"   모드: {'🔮 선물 (레버리지 x' + str(self.leverage) + ')' if self.trade_mode == 'futures' else '💵 현물'}")
-        logger.info(f"   최대 포지션: {self.max_positions}개  |  거래당 위험: {config['risk']['risk_per_trade']*100:.0f}%")
+        r = config['risk']
+        risk_min = r.get('risk_per_trade_min', r.get('risk_per_trade', 0.02)) * 100
+        risk_max = r.get('risk_per_trade_max', r.get('risk_per_trade', 0.02)) * 100
+        logger.info(f"   최대 포지션: {self.max_positions}개  |  거래당 위험: {risk_min:.0f}%~{risk_max:.0f}% (신호 강도에 따라 동적)")
 
     # ─────────────────────────────────────────
     # 매수 / 진입
