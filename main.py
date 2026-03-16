@@ -170,8 +170,10 @@ def main():
                 pos          = trader.positions[market]
                 buy_reason   = pos.get('buy_reason', '')
                 entry_price  = pos['entry_price']
-                stop_loss    = pos['stop_loss']
-                take_profit  = pos['take_profit']
+                stop_loss         = pos['stop_loss']
+                initial_stop_loss = pos.get('initial_stop_loss', stop_loss)
+                take_profit       = pos['take_profit']
+                peak_price        = pos.get('peak_price', entry_price)
                 candles_held = pos['candles_held']
                 exit_price   = current_prices[market]
                 profit       = (exit_price - entry_price) * pos['quantity']
@@ -181,6 +183,10 @@ def main():
                     market, entry_price, exit_price,
                     profit, profit_pct, reason, buy_reason, candles_held,
                     stop_loss, take_profit, trader, current_prices,
+                    direction=pos.get('direction', 'LONG'),
+                    leverage=pos.get('leverage', 1),
+                    peak_price=peak_price,
+                    initial_stop_loss=initial_stop_loss,
                 )
 
             # ── 빈 슬롯 있으면 매수 신호 탐색 ────────────────────
@@ -199,13 +205,15 @@ def main():
                 for score, market, sig in entry_signals[:slots]:
                     price = current_prices.get(market)
                     if price:
-                        trader.buy(market, price, sig['atr'], sig['reason'], sig['direction'])
+                        trader.buy(market, price, sig['atr'], sig['reason'], sig['direction'], sig['score'])
                         pos = trader.positions.get(market)
                         if pos:
                             notify_buy(
                                 market, price, pos['invest'],
                                 pos['stop_loss'], pos['take_profit'],
                                 sig['reason'], trader,
+                                direction=sig['direction'],
+                                leverage=pos.get('leverage', 1),
                             )
 
             # ── 현재 상태 출력 ────────────────────────────────────

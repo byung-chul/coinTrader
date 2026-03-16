@@ -40,9 +40,11 @@ class LiveTrader:
     """
 
     def __init__(self, config: dict):
-        self.config       = config
+        self.config        = config
         self.max_positions = config['trading']['max_positions']
-        self.leverage      = min(config['trading'].get('leverage', 1), 5)
+        self.leverage_min  = config['trading'].get('leverage_min', config['trading'].get('leverage', 1))
+        self.leverage_max  = min(config['trading'].get('leverage_max', config['trading'].get('leverage', 1)), 5)
+        self.leverage      = self.leverage_max   # 초기 설정 및 로그 표시용
         self.positions     = {}   # 내가 추적하는 포지션 (OKX 포지션과 동기화)
         self.trades        = []
         self.daily_start   = None
@@ -117,16 +119,40 @@ class LiveTrader:
     def can_buy(self) -> bool:
         return len(self.positions) < self.max_positions
 
-    def buy(self, market: str, price: float, atr: float, reason: str, direction: str = 'LONG'):
+    def _calc_risk_ratio(self, score: float) -> float:
+        """신호 강도(score)에 따라 risk_per_trade를 min~max 사이에서 동적 결정"""
+        r = self.config['risk']
+        mn    = r.get('risk_per_trade_min', r.get('risk_per_trade', 0.02))
+        mx    = r.get('risk_per_trade_max', r.get('risk_per_trade', 0.02))
+        cap   = r.get('score_cap', 30.0)
+        ratio = min(score / cap, 1.0)
+        return mn + (mx - mn) * ratio
+
+    def _calc_leverage(self, score: float) -> int:
+        """신호 강도(score)에 따라 레버리지를 min~max 사이에서 동적 결정"""
+        cap   = self.config['risk'].get('score_cap', 30.0)
+        ratio = min(score / cap, 1.0)
+        lev   = self.leverage_min + (self.leverage_max - self.leverage_min) * ratio
+        return max(1, round(lev))
+
+    def buy(self, market: str, price: float, atr: float, reason: str, direction: str = 'LONG', score: float = 0.0):
         if market in self.positions:
             return
 
+        leverage    = self._calc_leverage(score)
+
+        # 거래소에 해당 마켓 레버리지 실시간 설정
+        try:
+            self.exchange.set_leverage(leverage, market, params={'mgnMode': 'cross'})
+        except Exception as e:
+            logger.warning(f"레버리지 설정 실패 ({market}): {e}")
+
         balance     = self._get_balance()
         total_value = self.get_total_value({market: price})
-        risk_amount = total_value * self.config['risk']['risk_per_trade']
+        risk_amount = total_value * self._calc_risk_ratio(score)
         stop_dist   = atr * self.config['strategy']['atr_stop_mult']
-        quantity    = (risk_amount * self.leverage) / stop_dist
-        invest      = quantity * price / self.leverage
+        quantity    = (risk_amount * leverage) / stop_dist
+        invest      = quantity * price / leverage
         max_invest  = total_value * self.config['risk']['max_position_ratio']
         invest      = min(invest, max_invest, balance)
 
@@ -147,16 +173,16 @@ class LiveTrader:
                 params  = {'tdMode': 'cross', 'posSide': pos_side},
             )
             filled_price = float(order.get('average') or order.get('price') or price)
-            filled_cost  = contracts * filled_price * float(self.exchange.market(market).get('contractSize', 1)) / self.leverage
+            filled_cost  = contracts * filled_price * float(self.exchange.market(market).get('contractSize', 1)) / leverage
 
             if direction == 'LONG':
                 stop_loss   = filled_price - atr * self.config['strategy']['atr_stop_mult']
                 take_profit = filled_price + atr * self.config['strategy']['atr_target_mult']
-                liq_price   = filled_price * (1 - 0.9 / self.leverage)
+                liq_price   = filled_price * (1 - 0.9 / leverage)
             else:
                 stop_loss   = filled_price + atr * self.config['strategy']['atr_stop_mult']
                 take_profit = filled_price - atr * self.config['strategy']['atr_target_mult']
-                liq_price   = filled_price * (1 + 0.9 / self.leverage)
+                liq_price   = filled_price * (1 + 0.9 / leverage)
 
             self.positions[market] = {
                 'direction':    direction,
@@ -164,7 +190,11 @@ class LiveTrader:
                 'entry_time':   datetime.now(),
                 'contracts':    contracts,
                 'invest':       filled_cost,
-                'quantity':     filled_cost * self.leverage / filled_price,
+                'quantity':     filled_cost * leverage / filled_price,
+                'leverage':     leverage,
+                'atr':               atr,
+                'peak_price':        filled_price,
+                'initial_stop_loss': stop_loss,
                 'stop_loss':    stop_loss,
                 'take_profit':  take_profit,
                 'liq_price':    liq_price,
@@ -175,7 +205,7 @@ class LiveTrader:
             name = COIN_NAME.get(market, market)
             dir_emoji = "🔺롱" if direction == 'LONG' else "🔻숏"
             logger.info(f"{'🟢'} {dir_emoji} 실거래 진입! [{name}]")
-            logger.info(f"   체결가: {filled_price:.4f} | 계약: {contracts} | 마진: {filled_cost:.2f} USDT")
+            logger.info(f"   체결가: {filled_price:.4f} | 계약: {contracts} | 마진: {filled_cost:.2f} USDT | 레버리지: x{leverage} (점수 {score:.1f})")
             logger.info(f"   손절: {stop_loss:.4f} | 익절: {take_profit:.4f}")
 
         except ccxt.InsufficientFunds:
@@ -194,6 +224,19 @@ class LiveTrader:
             if price is None:
                 continue
             pos['candles_held'] += 1
+            trail_dist = pos['atr'] * self.config['strategy']['atr_stop_mult']
+
+            # ── 트레일링 스탑: 최고가/최저가 갱신 시 손절선 이동 ──
+            if direction == 'LONG' and price > pos['peak_price']:
+                pos['peak_price'] = price
+                new_stop = price - trail_dist
+                if new_stop > pos['stop_loss']:
+                    pos['stop_loss'] = new_stop
+            elif direction == 'SHORT' and price < pos['peak_price']:
+                pos['peak_price'] = price
+                new_stop = price + trail_dist
+                if new_stop < pos['stop_loss']:
+                    pos['stop_loss'] = new_stop
 
             if direction == 'LONG':
                 if price <= pos.get('liq_price', 0):       exits[market] = 'LIQUIDATION'

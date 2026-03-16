@@ -20,6 +20,12 @@ import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+KST = ZoneInfo("Asia/Seoul")
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +78,8 @@ def _send_discord(payload: dict):
 
 def notify_buy(market: str, price: float, invest: float,
                stop_loss: float, take_profit: float,
-               reason: str, trader) -> None:
+               reason: str, trader,
+               direction: str = 'LONG', leverage: int = 1) -> None:
     """
     매수 시 디스코드 알림
 
@@ -84,6 +91,8 @@ def notify_buy(market: str, price: float, invest: float,
     pnl     = total - trader.initial_capital
     pnl_pct = pnl / trader.initial_capital * 100
 
+    dir_label = "🔺 LONG (상승 베팅)" if direction == 'LONG' else "🔻 SHORT (하락 베팅)"
+
     # 이유를 줄별로 예쁘게
     reason_lines = "\n".join(
         f"> {part.strip()}"
@@ -94,20 +103,28 @@ def notify_buy(market: str, price: float, invest: float,
     # 현재 보유 코인 목록
     holdings = []
     for m, pos in trader.positions.items():
-        n = COIN_NAME.get(m, m)
-        holdings.append(f"• {n}: {pos['entry_price']:,.0f} USDT에 매수 중")
+        n   = COIN_NAME.get(m, m)
+        tag = "🔺" if pos.get('direction', 'LONG') == 'LONG' else "🔻"
+        lev = pos.get('leverage', 1)
+        holdings.append(f"• {tag} {n}  x{lev}  |  진입가 {pos['entry_price']:,.4f} USDT")
     holdings_str = "\n".join(holdings) if holdings else "없음"
 
     payload = {
         "embeds": [{
-            "title": f"🟢  매수!  {name}",
+            "title": f"{'🟢' if direction == 'LONG' else '🔴'}  진입!  {name}  {dir_label}",
+            "description": (
+                f"💵 **현금** {trader.capital:,.2f} USDT   "
+                f"📊 **총자산** {total:,.2f} USDT   "
+                f"{'📈' if pnl >= 0 else '📉'} **누적손익** {pnl:+,.2f} USDT ({pnl_pct:+.1f}%)"
+            ),
             "color": COLOR_BUY,
             "fields": [
                 {
-                    "name": "💰 매수 정보",
+                    "name": "💰 진입 정보",
                     "value": (
                         f"```\n"
-                        f"매수가   : {price:>15.4f} USDT\n"
+                        f"방향     : {direction} ({leverage}배 레버리지)\n"
+                        f"진입가   : {price:>15.4f} USDT\n"
                         f"투자금   : {invest:>15.2f} USDT\n"
                         f"목표가 🎯: {take_profit:>15.4f} USDT\n"
                         f"손절가 🛑: {stop_loss:>15.4f} USDT\n"
@@ -137,7 +154,7 @@ def notify_buy(market: str, price: float, invest: float,
                     "inline": False,
                 },
             ],
-            "footer": {"text": f"coinTrader  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"},
+            "footer": {"text": f"coinTrader  |  {now_kst().strftime('%Y-%m-%d %H:%M:%S')}"},
         }]
     }
     _send_discord(payload)
@@ -147,7 +164,9 @@ def notify_sell(market: str, entry_price: float, exit_price: float,
                 profit: float, profit_pct: float, reason: str,
                 buy_reason: str, candles_held: int,
                 stop_loss: float, take_profit: float,
-                trader, current_prices: dict) -> None:
+                trader, current_prices: dict,
+                direction: str = 'LONG', leverage: int = 1,
+                peak_price: float = 0.0, initial_stop_loss: float = 0.0) -> None:
     """
     매도 시 디스코드 알림
 
@@ -157,6 +176,7 @@ def notify_sell(market: str, entry_price: float, exit_price: float,
     name      = COIN_NAME.get(market, market)
     is_profit = profit >= 0
     color     = COLOR_SELL_WIN if is_profit else COLOR_SELL_LOSS
+    dir_tag   = "🔺 LONG" if direction == 'LONG' else "🔻 SHORT"
     result_emoji = "✅  익절" if reason == 'TAKE_PROFIT' else ("😢  손절" if reason == 'STOP_LOSS' else "⏰  시간초과")
 
     reason_simple = {
@@ -173,23 +193,35 @@ def notify_sell(market: str, entry_price: float, exit_price: float,
     # 남은 보유 코인
     holdings = []
     for m, pos in trader.positions.items():
-        n   = COIN_NAME.get(m, m)
-        p   = current_prices.get(m, pos['entry_price'])
-        pct = (p - pos['entry_price']) / pos['entry_price'] * 100
-        holdings.append(f"• {n}: {pct:+.1f}%")
+        n    = COIN_NAME.get(m, m)
+        p    = current_prices.get(m, pos['entry_price'])
+        d    = pos.get('direction', 'LONG')
+        lev  = pos.get('leverage', 1)
+        tag  = "🔺" if d == 'LONG' else "🔻"
+        pct  = (p - pos['entry_price']) / pos['entry_price'] * 100 * lev
+        holdings.append(f"• {tag} {n}  x{lev}  |  {pct:+.1f}%")
     holdings_str = "\n".join(holdings) if holdings else "없음 (현금 대기 중)"
 
     payload = {
         "embeds": [{
-            "title": f"{'🟢' if is_profit else '🔴'}  매도!  {name}  {result_emoji}",
+            "title": f"{'🟢' if is_profit else '🔴'}  청산!  {name}  {dir_tag}  {result_emoji}",
+            "description": (
+                f"💵 **현금** {trader.capital:,.2f} USDT   "
+                f"📊 **총자산** {total:,.2f} USDT   "
+                f"{'📈' if pnl >= 0 else '📉'} **누적손익** {pnl:+,.2f} USDT ({pnl_pct_total:+.1f}%)"
+            ),
             "color": color,
             "fields": [
                 {
                     "name": "📊  거래 결과",
                     "value": (
                         f"```\n"
-                        f"매수가   : {entry_price:>15.4f} USDT\n"
-                        f"매도가   : {exit_price:>15.4f} USDT\n"
+                        f"방향     : {direction} ({leverage}배 레버리지)\n"
+                        f"진입가   : {entry_price:>15.4f} USDT\n"
+                        f"{'최고가' if direction == 'LONG' else '최저가'}   : {peak_price:>15.4f} USDT\n"
+                        f"초기손절  : {initial_stop_loss:>15.4f} USDT\n"
+                        f"최종손절  : {stop_loss:>15.4f} USDT  ({stop_loss - initial_stop_loss:>+.4f})\n"
+                        f"청산가   : {exit_price:>15.4f} USDT\n"
                         f"손익     : {profit:>+15.2f} USDT  ({profit_pct:+.1f}%)\n"
                         f"보유 시간: {candles_held}분\n"
                         f"```"
@@ -218,7 +250,7 @@ def notify_sell(market: str, entry_price: float, exit_price: float,
                     "inline": False,
                 },
             ],
-            "footer": {"text": f"coinTrader  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"},
+            "footer": {"text": f"coinTrader  |  {now_kst().strftime('%Y-%m-%d %H:%M:%S')}"},
         }]
     }
     _send_discord(payload)
@@ -229,14 +261,14 @@ def notify_sell(market: str, entry_price: float, exit_price: float,
 # ─────────────────────────────────────────────────────────────
 
 def _build_html_report(trader, config: dict, current_prices: dict) -> str:
-    today     = datetime.now().strftime("%Y년 %m월 %d일")
+    today     = now_kst().strftime("%Y년 %m월 %d일")
     total     = trader.get_total_value(current_prices)
     total_pnl = total - trader.initial_capital
     total_pct = total_pnl / trader.initial_capital * 100
     day_pnl   = total - trader.daily_start
     day_pct   = day_pnl / trader.daily_start * 100 if trader.daily_start > 0 else 0
 
-    today_str    = datetime.now().strftime("%Y-%m-%d")
+    today_str    = now_kst().strftime("%Y-%m-%d")
     today_trades = [t for t in trader.trades if t['exit_time'].strftime("%Y-%m-%d") == today_str]
     wins         = [t for t in today_trades if t['profit'] >= 0]
     losses       = [t for t in today_trades if t['profit'] <  0]
@@ -388,7 +420,7 @@ def send_daily_report(trader, config: dict, current_prices: dict):
         logger.warning("⚠️  GMAIL_SENDER / GMAIL_APP_PASSWORD 미설정 — 이메일 생략")
         return
 
-    today   = datetime.now().strftime("%Y년 %m월 %d일")
+    today   = now_kst().strftime("%Y년 %m월 %d일")
     total   = trader.get_total_value(current_prices)
     day_pnl = total - trader.daily_start
     emoji   = "📈" if day_pnl >= 0 else "📉"

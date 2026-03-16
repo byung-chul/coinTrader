@@ -58,8 +58,9 @@ class PaperTrader:
         self.config          = config
         self.max_positions   = config['trading']['max_positions']
         self.trade_mode      = config['trading'].get('trade_mode', 'spot')
-        raw_leverage         = config['trading'].get('leverage', 1) if self.trade_mode == 'futures' else 1
-        self.leverage        = min(raw_leverage, 5)   # 선물 최대 5배 제한
+        self.leverage_min    = config['trading'].get('leverage_min', config['trading'].get('leverage', 1)) if self.trade_mode == 'futures' else 1
+        self.leverage_max    = min(config['trading'].get('leverage_max', config['trading'].get('leverage', 1)), 5) if self.trade_mode == 'futures' else 1
+        self.leverage        = self.leverage_max   # 로그 표시용 기본값
 
         logger.info(f"📄 페이퍼 트레이딩 시작")
         logger.info(f"   초기 자금: {self.capital:,.2f} USDT")
@@ -72,19 +73,36 @@ class PaperTrader:
     def can_buy(self) -> bool:
         return len(self.positions) < self.max_positions
 
-    def buy(self, market: str, price: float, atr: float, reason: str, direction: str = 'LONG'):
+    def _calc_risk_ratio(self, score: float) -> float:
+        """신호 강도(score)에 따라 risk_per_trade를 min~max 사이에서 동적 결정"""
+        r = self.config['risk']
+        mn    = r.get('risk_per_trade_min', r.get('risk_per_trade', 0.02))
+        mx    = r.get('risk_per_trade_max', r.get('risk_per_trade', 0.02))
+        cap   = r.get('score_cap', 30.0)
+        ratio = min(score / cap, 1.0)
+        return mn + (mx - mn) * ratio
+
+    def _calc_leverage(self, score: float) -> int:
+        """신호 강도(score)에 따라 레버리지를 min~max 사이에서 동적 결정"""
+        cap   = self.config['risk'].get('score_cap', 30.0)
+        ratio = min(score / cap, 1.0)
+        lev   = self.leverage_min + (self.leverage_max - self.leverage_min) * ratio
+        return max(1, round(lev))
+
+    def buy(self, market: str, price: float, atr: float, reason: str, direction: str = 'LONG', score: float = 0.0):
         """포지션 진입 (LONG 또는 SHORT)"""
         if market in self.positions:
             return
 
+        leverage    = self._calc_leverage(score)
         total_value = self.get_total_value({market: price})
-        risk_amount = total_value * self.config['risk']['risk_per_trade']
+        risk_amount = total_value * self._calc_risk_ratio(score)
         stop_dist   = atr * self.config['strategy']['atr_stop_mult']
 
         # 레버리지 적용: 같은 마진으로 더 큰 포지션 운용
         # 수량 = (위험금액 × 레버리지) / 손절거리
-        quantity = (risk_amount * self.leverage) / stop_dist
-        invest   = quantity * price / self.leverage   # 실제 필요한 증거금(마진)
+        quantity = (risk_amount * leverage) / stop_dist
+        invest   = quantity * price / leverage   # 실제 필요한 증거금(마진)
 
         # 안전장치: 마진은 자산의 max_position_ratio 이하
         max_invest = total_value * self.config['risk']['max_position_ratio']
@@ -93,18 +111,18 @@ class PaperTrader:
         if invest <= 0:
             return
 
-        quantity = invest * self.leverage / price
+        quantity = invest * leverage / price
 
         # 방향에 따라 손절/익절 위치가 반대
         if direction == 'LONG':
             stop_loss   = price - atr * self.config['strategy']['atr_stop_mult']
             take_profit = price + atr * self.config['strategy']['atr_target_mult']
             # 청산가: 마진 90% 소진 시점 (레버리지 높을수록 가격 변동 조금만 해도 청산)
-            liq_price   = price * (1 - 0.9 / self.leverage)
+            liq_price   = price * (1 - 0.9 / leverage)
         else:  # SHORT
             stop_loss   = price + atr * self.config['strategy']['atr_stop_mult']
             take_profit = price - atr * self.config['strategy']['atr_target_mult']
-            liq_price   = price * (1 + 0.9 / self.leverage)
+            liq_price   = price * (1 + 0.9 / leverage)
 
         name = COIN_NAME.get(market, market)
         self.positions[market] = {
@@ -116,6 +134,10 @@ class PaperTrader:
             'stop_loss':    stop_loss,
             'take_profit':  take_profit,
             'liq_price':    liq_price,
+            'leverage':     leverage,
+            'atr':               atr,
+            'peak_price':        price,
+            'initial_stop_loss': stop_loss,
             'candles_held': 0,
             'buy_reason':   reason,
         }
@@ -123,7 +145,8 @@ class PaperTrader:
 
         dir_emoji = "🟢🔺" if direction == 'LONG' else "🔴🔻"
         logger.info(f"{dir_emoji} {direction} 진입! [{name}]")
-        logger.info(f"   가격: {price:.4f} | 마진: {invest:.2f} USDT | 레버리지: x{self.leverage}")
+        risk_ratio = self._calc_risk_ratio(score)
+        logger.info(f"   가격: {price:.4f} | 마진: {invest:.2f} USDT | 레버리지: x{leverage} | 위험비율: {risk_ratio*100:.1f}% (점수 {score:.1f})")
         logger.info(f"   손절: {stop_loss:.4f} | 익절: {take_profit:.4f} | 청산가: {liq_price:.4f}")
         logger.info(f"   이유: {reason}")
 
@@ -137,7 +160,20 @@ class PaperTrader:
             if price is None:
                 continue
             pos['candles_held'] += 1
-            direction = pos.get('direction', 'LONG')
+            direction   = pos.get('direction', 'LONG')
+            trail_dist  = pos['atr'] * self.config['strategy']['atr_stop_mult']
+
+            # ── 트레일링 스탑: 최고가/최저가 갱신 시 손절선 이동 ──
+            if direction == 'LONG' and price > pos['peak_price']:
+                pos['peak_price'] = price
+                new_stop = price - trail_dist
+                if new_stop > pos['stop_loss']:
+                    pos['stop_loss'] = new_stop
+            elif direction == 'SHORT' and price < pos['peak_price']:
+                pos['peak_price'] = price
+                new_stop = price + trail_dist
+                if new_stop < pos['stop_loss']:
+                    pos['stop_loss'] = new_stop
 
             # 청산 (강제 종료 — 손해가 너무 커서 거래소가 강제로 닫음)
             if direction == 'LONG' and price <= pos['liq_price']:
@@ -145,7 +181,7 @@ class PaperTrader:
             elif direction == 'SHORT' and price >= pos['liq_price']:
                 exits[market] = 'LIQUIDATION'
 
-            # 손절 (내가 설정한 한계)
+            # 손절 (트레일링 스탑 포함)
             elif direction == 'LONG' and price <= pos['stop_loss']:
                 exits[market] = 'STOP_LOSS'
             elif direction == 'SHORT' and price >= pos['stop_loss']:
@@ -263,10 +299,11 @@ class PaperTrader:
                 name      = COIN_NAME.get(market, market)
                 price     = current_prices.get(market, pos['entry_price'])
                 direction = pos.get('direction', 'LONG')
+                lev = pos.get('leverage', self.leverage_max)
                 if direction == 'LONG':
-                    pct = (price - pos['entry_price']) / pos['entry_price'] * 100 * self.leverage
+                    pct = (price - pos['entry_price']) / pos['entry_price'] * 100 * lev
                 else:
-                    pct = (pos['entry_price'] - price) / pos['entry_price'] * 100 * self.leverage
+                    pct = (pos['entry_price'] - price) / pos['entry_price'] * 100 * lev
                 tag = "🔺" if direction == 'LONG' else "🔻"
                 parts.append(f"{tag}{name}({pct:+.1f}%)")
             holding_str = ", ".join(parts)
