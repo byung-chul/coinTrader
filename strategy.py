@@ -69,41 +69,41 @@ def generate_signal(df: pd.DataFrame, config: dict) -> dict:
     vol_ratio = cur['volume'] / cur['volume_ma'] if cur['volume_ma'] > 0 else 0
     vol_surge = vol_ratio >= s.get('volume_mult', 1.5)
 
-    # ── LONG: 상단 돌파 추세 추종 ────────────────────────────────
-    # 조건 1: 볼린저 밴드 상단 돌파 (강한 상승 모멘텀)
-    break_upper = cur['bb_pct'] > s.get('bb_entry_upper', 0.75)
-    # 조건 2: RSI 50 이상이고 상승 중 (상승 추세 확인)
-    rsi_strong  = cur['rsi'] > 50 and cur['rsi'] > prev['rsi']
+    # ── LONG: 하단 돌파 → 반등 베팅 ─────────────────────────────
+    # 조건 1: 볼린저 밴드 하단 돌파 (과매도 구간)
+    break_lower = cur['bb_pct'] < s.get('bb_entry_lower', 0.25)
+    # 조건 2: RSI 50 이하 (과매도 확인)
+    rsi_weak    = cur['rsi'] < 50
 
-    if break_upper and rsi_strong and vol_surge:
-        score = (cur['bb_pct'] - 0.75) * cur['rsi'] * vol_ratio
+    if break_lower and rsi_weak and vol_surge:
+        score = (0.25 - cur['bb_pct']) * (100 - cur['rsi']) * vol_ratio
         reason = (
-            f"① 볼린저 밴드 상단 돌파 — 강한 상승 모멘텀 🚀 (밴드 위치 {cur['bb_pct']*100:.0f}%)  "
-            f"② RSI 상승 중 ({prev['rsi']:.0f}→{cur['rsi']:.0f}) — 상승력 확인  "
+            f"① 볼린저 밴드 하단 돌파 — 과매도 구간 반등 베팅 📉→📈 (밴드 위치 {cur['bb_pct']*100:.0f}%)  "
+            f"② RSI 과매도 ({cur['rsi']:.0f}) — 반등 가능성 확인  "
             f"③ 평소보다 {vol_ratio:.1f}배 많이 거래되고 있어 🔥"
         )
         return {'action': 'LONG', 'direction': 'LONG', 'reason': reason, 'atr': atr, 'score': score}
 
-    # ── SHORT: 하단 돌파 추세 추종 (선물 모드에서만) ─────────────
+    # ── SHORT: 상단 돌파 → 되돌림 베팅 (선물 모드에서만) ─────────
     if trade_mode == 'futures':
-        # 조건 1: 볼린저 밴드 하단 돌파 (강한 하락 모멘텀)
-        break_lower = cur['bb_pct'] < s.get('bb_entry_lower', 0.25)
-        # 조건 2: RSI 50 이하이고 하락 중 (하락 추세 확인)
-        rsi_weak    = cur['rsi'] < 50 and cur['rsi'] < prev['rsi']
+        # 조건 1: 볼린저 밴드 상단 돌파 (과매수 구간)
+        break_upper = cur['bb_pct'] > s.get('bb_entry_upper', 0.75)
+        # 조건 2: RSI 50 이상 (과매수 확인)
+        rsi_strong  = cur['rsi'] > 50
 
-        if break_lower and rsi_weak and vol_surge:
-            score = (0.25 - cur['bb_pct']) * (100 - cur['rsi']) * vol_ratio
+        if break_upper and rsi_strong and vol_surge:
+            score = (cur['bb_pct'] - 0.75) * cur['rsi'] * vol_ratio
             reason = (
-                f"① 볼린저 밴드 하단 돌파 — 강한 하락 모멘텀 📉 (밴드 위치 {cur['bb_pct']*100:.0f}%)  "
-                f"② RSI 하락 중 ({prev['rsi']:.0f}→{cur['rsi']:.0f}) — 하락력 확인  "
+                f"① 볼린저 밴드 상단 돌파 — 과매수 구간 되돌림 베팅 📈→📉 (밴드 위치 {cur['bb_pct']*100:.0f}%)  "
+                f"② RSI 과매수 ({cur['rsi']:.0f}) — 되돌림 가능성 확인  "
                 f"③ 평소보다 {vol_ratio:.1f}배 많이 거래되고 있어 🔥"
             )
             return {'action': 'SHORT', 'direction': 'SHORT', 'reason': reason, 'atr': atr, 'score': score}
 
     # ── 신호 없음 ────────────────────────────────────────────────
     failed = []
-    if not break_upper: failed.append(f"상단 돌파 안 됨 (밴드 위치 {cur['bb_pct']*100:.0f}%)")
-    if not rsi_strong:  failed.append(f"RSI 상승력 부족 ({cur['rsi']:.0f})")
+    if not break_lower: failed.append(f"하단 돌파 안 됨 (밴드 위치 {cur['bb_pct']*100:.0f}%)")
+    if not rsi_weak:    failed.append(f"RSI 아직 과매도 아님 ({cur['rsi']:.0f})")
     if not vol_surge:   failed.append(f"거래량 부족 ({vol_ratio:.1f}배)")
 
     return {'action': 'HOLD', 'direction': None, 'reason': ' / '.join(failed), 'atr': atr, 'score': 0}
