@@ -63,3 +63,5 @@ risk:
   max_position_ratio: 0.45     # 한 코인에 아무리 많아도 자산의 이 비율까지만 투자 (0.45 = 45%)
   daily_loss_limit: 0.10       # 하루에 몇 % 이상 잃으면 거래 중단 (0.10 = 10%)
   time_stop_candles: 60        # 몇 개 봉이 지나도 수익 없으면 강제 청산 (60봉 = 60분)
+  cooldown_candles: 10         # 손절 후 N분간 같은 방향 재진입 금지
+  min_atr_pct: 0.003           # ATR이 현재가의 이 비율 미만이면 진입 스킵 (0.3% = 너무 좁은 시장)

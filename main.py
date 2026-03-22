@@ -119,6 +119,7 @@ def main():
     last_day         = datetime.now().date()
     last_report_date = None
     current_prices   = {}
+    cooldown_until   = {}   # {market: {'LONG': datetime, 'SHORT': datetime}}
 
     while not _kill_switch:
         now = datetime.now()
@@ -165,29 +166,37 @@ def main():
                 continue
 
             # ── 보유 코인 청산 조건 확인 ──────────────────────────
+            cooldown_candles = config['risk'].get('cooldown_candles', 10)
             exits = trader.check_exits(current_prices)
             for market, reason in exits.items():
-                pos          = trader.positions[market]
-                buy_reason   = pos.get('buy_reason', '')
-                entry_price  = pos['entry_price']
+                pos               = trader.positions[market]
+                direction         = pos.get('direction', 'LONG')
+                buy_reason        = pos.get('buy_reason', '')
+                entry_price       = pos['entry_price']
                 stop_loss         = pos['stop_loss']
                 initial_stop_loss = pos.get('initial_stop_loss', stop_loss)
                 take_profit       = pos['take_profit']
                 peak_price        = pos.get('peak_price', entry_price)
-                candles_held = pos['candles_held']
-                exit_price   = current_prices[market]
-                profit       = (exit_price - entry_price) * pos['quantity']
-                profit_pct   = (exit_price - entry_price) / entry_price * 100
+                candles_held      = pos['candles_held']
+                exit_price        = current_prices[market]
+                profit            = (exit_price - entry_price) * pos['quantity']
+                profit_pct        = (exit_price - entry_price) / entry_price * 100
                 trader.sell(market, exit_price, reason, buy_reason)
                 notify_sell(
                     market, entry_price, exit_price,
                     profit, profit_pct, reason, buy_reason, candles_held,
                     stop_loss, take_profit, trader, current_prices,
-                    direction=pos.get('direction', 'LONG'),
+                    direction=direction,
                     leverage=pos.get('leverage', 1),
                     peak_price=peak_price,
                     initial_stop_loss=initial_stop_loss,
                 )
+                # 손절 시 쿨다운 설정
+                if reason == 'STOP_LOSS':
+                    if market not in cooldown_until:
+                        cooldown_until[market] = {}
+                    cooldown_until[market][direction] = datetime.now().timestamp() + cooldown_candles * check_interval
+                    logger.info(f"⏳ [{market}] {direction} 쿨다운 {cooldown_candles}분 시작")
 
             # ── 빈 슬롯 있으면 매수 신호 탐색 ────────────────────
             if trader.can_buy():
@@ -197,6 +206,12 @@ def main():
                         continue
                     sig = generate_signal(df, config)
                     if sig['action'] in ('LONG', 'SHORT'):
+                        # 쿨다운 체크
+                        cd = cooldown_until.get(market, {}).get(sig['direction'], 0)
+                        if datetime.now().timestamp() < cd:
+                            remaining = int((cd - datetime.now().timestamp()) / 60)
+                            logger.info(f"⏳ [{market}] {sig['direction']} 쿨다운 중 ({remaining}분 남음) — 진입 스킵")
+                            continue
                         entry_signals.append((sig['score'], market, sig))
 
                 entry_signals.sort(key=lambda x: x[0], reverse=True)

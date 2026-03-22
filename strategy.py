@@ -69,13 +69,21 @@ def generate_signal(df: pd.DataFrame, config: dict) -> dict:
     vol_ratio = cur['volume'] / cur['volume_ma'] if cur['volume_ma'] > 0 else 0
     vol_surge = vol_ratio >= s.get('volume_mult', 1.5)
 
-    # ── LONG: 하단 돌파 → 반등 베팅 ─────────────────────────────
-    # 조건 1: 볼린저 밴드 하단 돌파 (과매도 구간)
+    # ── 최소 ATR 체크 (너무 좁은 시장 진입 스킵) ────────────────
+    min_atr_pct = s.get('min_atr_pct', 0.003)
+    if cur['close'] > 0 and atr / cur['close'] < min_atr_pct:
+        return {'action': 'HOLD', 'direction': None,
+                'reason': f"ATR이 너무 작음 ({atr/cur['close']*100:.3f}% < {min_atr_pct*100:.1f}%) — 변동성 부족",
+                'atr': atr, 'score': 0}
+
+    # ── 추세 필터 (볼린저 밴드 중간선 기준) ─────────────────────
+    above_mid = cur['close'] > cur['bb_mid']   # True = 단기 상승 추세
+
+    # ── LONG: 하단 돌파 + 하락 추세일 때만 ───────────────────────
     break_lower = cur['bb_pct'] < s.get('bb_entry_lower', 0.25)
-    # 조건 2: RSI 50 이하 (과매도 확인)
     rsi_weak    = cur['rsi'] < 50
 
-    if break_lower and rsi_weak and vol_surge:
+    if break_lower and rsi_weak and vol_surge and not above_mid:
         score = (0.25 - cur['bb_pct']) * (100 - cur['rsi']) * vol_ratio
         reason = (
             f"① 볼린저 밴드 하단 돌파 — 과매도 구간 반등 베팅 📉→📈 (밴드 위치 {cur['bb_pct']*100:.0f}%)  "
@@ -84,14 +92,12 @@ def generate_signal(df: pd.DataFrame, config: dict) -> dict:
         )
         return {'action': 'LONG', 'direction': 'LONG', 'reason': reason, 'atr': atr, 'score': score}
 
-    # ── SHORT: 상단 돌파 → 되돌림 베팅 (선물 모드에서만) ─────────
+    # ── SHORT: 상단 돌파 + 상승 추세일 때만 (선물 모드에서만) ────
     if trade_mode == 'futures':
-        # 조건 1: 볼린저 밴드 상단 돌파 (과매수 구간)
         break_upper = cur['bb_pct'] > s.get('bb_entry_upper', 0.75)
-        # 조건 2: RSI 50 이상 (과매수 확인)
         rsi_strong  = cur['rsi'] > 50
 
-        if break_upper and rsi_strong and vol_surge:
+        if break_upper and rsi_strong and vol_surge and above_mid:
             score = (cur['bb_pct'] - 0.75) * cur['rsi'] * vol_ratio
             reason = (
                 f"① 볼린저 밴드 상단 돌파 — 과매수 구간 되돌림 베팅 📈→📉 (밴드 위치 {cur['bb_pct']*100:.0f}%)  "
@@ -102,8 +108,9 @@ def generate_signal(df: pd.DataFrame, config: dict) -> dict:
 
     # ── 신호 없음 ────────────────────────────────────────────────
     failed = []
+    failed.append(f"추세: {'상승' if above_mid else '하락'} (BB중간선 {'위' if above_mid else '아래'})")
     if not break_lower: failed.append(f"하단 돌파 안 됨 (밴드 위치 {cur['bb_pct']*100:.0f}%)")
-    if not rsi_weak:    failed.append(f"RSI 아직 과매도 아님 ({cur['rsi']:.0f})")
+    if not rsi_weak:    failed.append(f"RSI 과매도 아님 ({cur['rsi']:.0f})")
     if not vol_surge:   failed.append(f"거래량 부족 ({vol_ratio:.1f}배)")
 
     return {'action': 'HOLD', 'direction': None, 'reason': ' / '.join(failed), 'atr': atr, 'score': 0}
