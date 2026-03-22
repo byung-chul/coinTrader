@@ -203,10 +203,14 @@ class LiveTrader:
             }
 
             name = COIN_NAME.get(market, market)
-            dir_emoji = "🔺롱" if direction == 'LONG' else "🔻숏"
-            logger.info(f"{'🟢'} {dir_emoji} 실거래 진입! [{name}]")
-            logger.info(f"   체결가: {filled_price:.4f} | 계약: {contracts} | 마진: {filled_cost:.2f} USDT | 레버리지: x{leverage} (점수 {score:.1f})")
-            logger.info(f"   손절: {stop_loss:.4f} | 익절: {take_profit:.4f}")
+            dir_emoji   = "🟢🔺" if direction == 'LONG' else "🔴🔻"
+            risk_ratio  = self._calc_risk_ratio(score)
+            total_after = self.get_total_value({market: filled_price})
+            logger.info(f"{dir_emoji} {direction} 실거래 진입! [{name}]")
+            logger.info(f"   매매금액 : {filled_cost:.2f} USDT (레버리지 x{leverage} → 실효 {filled_cost*leverage:.2f} USDT)")
+            logger.info(f"   체결가   : {filled_price:.4f} USDT | 계약: {contracts} | 위험비율: {risk_ratio*100:.1f}% (점수 {score:.1f})")
+            logger.info(f"   손절     : {stop_loss:.4f} | 익절: {take_profit:.4f} | 청산가: {liq_price:.4f}")
+            logger.info(f"   잔액     : {self._get_balance():.2f} USDT (총자산 {total_after:.2f} USDT)")
 
         except ccxt.InsufficientFunds:
             logger.error(f"잔고 부족 — 진입 불가 ({market})")
